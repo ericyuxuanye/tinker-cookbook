@@ -1,8 +1,9 @@
 """Four-player chess environment for tinker RL."""
 
 import asyncio
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Sequence
 
 import chz
@@ -21,8 +22,11 @@ from tinker_cookbook.rl.types import (
     RLDataset,
     RLDatasetBuilder,
     StepResult,
+    Trajectory,
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+logger = logging.getLogger(__name__)
 
 STOP_CONDITION = ["]\n"]
 ILLEGAL_MOVE_REWARD = -5.0
@@ -38,6 +42,7 @@ class FourPlayerCoordinator:
         self.condition = asyncio.Condition()
         self.game_done = False
         self.last_move_valid = True  # Track if the last attempted move was valid
+        self.move_history: list[dict] = []  # Track all moves for logging
 
     @property
     def current_player_id(self) -> int:
@@ -51,7 +56,7 @@ class FourPlayerCoordinator:
                 lambda: self.current_player_id == player_id or self.game_done
             )
 
-    async def make_move(self, player_id: int, move_action: int) -> tuple[float, dict]:
+    async def make_move(self, player_id: int, move_action: int, move_text: str = "") -> tuple[float, dict]:
         """Make a move and notify waiting players. Returns (reward, info)."""
         async with self.condition:
             if self.game_done:
@@ -73,6 +78,16 @@ class FourPlayerCoordinator:
             self.last_move_valid = move_valid
 
             if move_valid:
+                # Log the move
+                self.move_history.append({
+                    "player_id": player_id,
+                    "move_text": move_text,
+                    "move_number": int(self.state.move_count),
+                    "reward": float(reward),
+                    "scores": [int(s) for s in next_state.player_scores],
+                    "active_players": [bool(a) for a in next_state.player_active],
+                })
+
                 # Update state only if move was valid
                 self.state = next_state
                 self.game_done = bool(done)
@@ -280,7 +295,7 @@ class FourPlayerChessEnv(Env):
         action_idx = encode_action(source_row, source_col, dest_row, dest_col,
                                    promotion, self.valid_mask)
 
-        await self.coordinator.make_move(current_player, action_idx)
+        await self.coordinator.make_move(current_player, action_idx, action_text)
 
     async def step(self, action: Action) -> StepResult:
         """Take a step in the environment."""
@@ -298,7 +313,7 @@ class FourPlayerChessEnv(Env):
                                    promotion, self.valid_mask)
 
         # Execute move
-        reward, info = await self.coordinator.make_move(self.player_id, action_idx)
+        reward, info = await self.coordinator.make_move(self.player_id, action_idx, action_text)
 
         # Check if move was valid
         if not self.coordinator.last_move_valid:
@@ -312,7 +327,11 @@ class FourPlayerChessEnv(Env):
                     episode_done=True,
                     next_observation=self.get_observation(),
                     next_stop_condition=self.stop_condition,
-                    metrics={"invalid_move_exceeded_retries": 1},
+                    metrics={
+                        "invalid_move_exceeded_retries": 1,
+                        "move_text": action_text,
+                        "player_id": self.player_id,
+                    },
                 )
             else:
                 # Allow retry - provide feedback
@@ -321,11 +340,26 @@ class FourPlayerChessEnv(Env):
                     episode_done=False,
                     next_observation=self.get_observation_with_retry_feedback(),
                     next_stop_condition=self.stop_condition,
-                    metrics={"invalid_move_retry": 1},
+                    metrics={
+                        "invalid_move_retry": 1,
+                        "retry_count": self.retry_count,
+                        "move_text": action_text,
+                        "player_id": self.player_id,
+                    },
                 )
 
         # Valid move - reset retry counter
         self.retry_count = 0
+
+        # Create per-step metrics
+        player_names = ["Red", "Blue", "Yellow", "Green"]
+        metrics = {
+            "move": action_text,
+            "player": player_names[self.player_id],
+            "move_number": int(self.coordinator.state.move_count),
+            "reward": float(reward),
+            "score": int(self.coordinator.state.player_scores[self.player_id]),
+        }
 
         # Wait for next turn
         await self.wait_for_turn()
@@ -335,7 +369,7 @@ class FourPlayerChessEnv(Env):
             episode_done=self.coordinator.game_done,
             next_observation=self.get_observation(),
             next_stop_condition=self.stop_condition,
-            metrics={},
+            metrics=metrics,
         )
 
     def get_done_step(self) -> StepResult:
@@ -369,6 +403,70 @@ class FourPlayerChessEnvGroupBuilder(EnvGroupBuilder):
     self_play: bool
     num_players: ClassVar[int] = 4
     opponent_policies: list[TinkerMessageCompleter | None] | None = None
+
+    async def compute_group_rewards(
+        self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
+    ) -> list[tuple[float, dict]]:
+        """
+        Compute final rewards and trajectory-level metrics for each player.
+        This is called after all trajectories in the group are complete.
+        """
+        # Get the coordinator (all envs in self-play share the same coordinator)
+        coordinator = env_group[0].coordinator  # type: ignore
+
+        # Get final game state
+        final_state = coordinator.state
+        player_names = ["Red", "Blue", "Yellow", "Green"]
+        player_colors = ["🔴", "🔵", "🟡", "🟢"]
+
+        # Determine winner (player with highest score among active players)
+        scores = [int(s) for s in final_state.player_scores]
+        active_players = [bool(a) for a in final_state.player_active]
+
+        winner_score = -1
+        winner_id = -1
+        for i, (score, active) in enumerate(zip(scores, active_players)):
+            if active and score > winner_score:
+                winner_score = score
+                winner_id = i
+
+        # Log game summary
+        if coordinator.move_history:
+            logger.info("\n" + "=" * 60)
+            logger.info("GAME SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"Total moves: {len(coordinator.move_history)}")
+            logger.info(f"Winner: {player_colors[winner_id]} {player_names[winner_id]} (score: {winner_score})")
+            logger.info("\nFinal Scores:")
+            for i, (score, active) in enumerate(zip(scores, active_players)):
+                status = "Active" if active else "Eliminated"
+                logger.info(f"  {player_colors[i]} {player_names[i]}: {score} points ({status})")
+
+            logger.info("\nMove History:")
+            for move in coordinator.move_history[:20]:  # Show first 20 moves
+                player = move["player_id"]
+                logger.info(
+                    f"  Move {move['move_number']}: {player_colors[player]} {player_names[player]} "
+                    f"plays {move['move_text']} (reward: {move['reward']}, score: {move['scores'][player]})"
+                )
+            if len(coordinator.move_history) > 20:
+                logger.info(f"  ... and {len(coordinator.move_history) - 20} more moves")
+            logger.info("=" * 60 + "\n")
+
+        # Create trajectory-level metrics for each player
+        results = []
+        for i, env in enumerate(env_group):
+            player_id = env.player_id  # type: ignore
+            metrics = {
+                "game_length": len(coordinator.move_history),
+                "final_score": scores[player_id],
+                "won_game": 1 if player_id == winner_id else 0,
+                "survived": 1 if active_players[player_id] else 0,
+                "winner_player": player_names[winner_id] if winner_id >= 0 else "None",
+            }
+            results.append((0.0, metrics))  # No additional reward, just metrics
+
+        return results
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments sharing the same chess game."""

@@ -117,12 +117,69 @@ Players receive rewards for:
 
 The total reward is the sum of per-timestep rewards from the JAX environment.
 
+## Logging and Monitoring
+
+The environment provides comprehensive logging to track training progress:
+
+### Per-Step Metrics
+
+Each move logs:
+- `move`: The move text (e.g., `[(12, 6) -> (10, 6)]`)
+- `player`: Player color (Red, Blue, Yellow, Green)
+- `move_number`: Current move number in the game
+- `reward`: Immediate reward received
+- `score`: Current cumulative score
+- `retry_count`: Number of invalid move retries (if any)
+
+### Trajectory-Level Metrics
+
+At the end of each game:
+- `game_length`: Total number of moves
+- `final_score`: Final score for this player
+- `won_game`: 1 if this player won, 0 otherwise
+- `survived`: 1 if player still active, 0 if eliminated
+- `winner_player`: Name of the winning player
+
+### Game Summaries
+
+After each game, a detailed summary is logged showing:
+- Final scores for all players
+- Winner and their score
+- Move-by-move history (first 20 moves)
+- Player eliminations and status
+
+Example log output:
+```
+============================================================
+GAME SUMMARY
+============================================================
+Total moves: 42
+Winner: 🔴 Red (score: 15)
+
+Final Scores:
+  🔴 Red: 15 points (Active)
+  🔵 Blue: 8 points (Eliminated)
+  🟡 Yellow: 12 points (Active)
+  🟢 Green: 5 points (Eliminated)
+
+Move History:
+  Move 1: 🔴 Red plays [(12, 6) -> (10, 6)] (reward: 0.0, score: 0)
+  Move 2: 🔵 Blue plays [(1, 7) -> (3, 7)] (reward: 0.0, score: 0)
+  ...
+============================================================
+```
+
+### Metrics in Training Logs
+
+All metrics are automatically aggregated and displayed during training via `ml_log` and saved to `metrics.jsonl`. You can also enable Weights & Biases logging with `wandb_project` parameter.
+
 ## Training Tips
 
 1. **Batch size**: Use multiples of 4 (one env per player). Recommended: 512 or higher.
 2. **Learning rate**: Start with 3e-5. Four-player chess requires careful exploration.
 3. **Max tokens**: 128 tokens is usually sufficient for move generation.
 4. **Eval frequency**: Evaluate every 5-10 batches to monitor progress.
+5. **Monitor logs**: Check game summaries to see if the model is learning valid moves and strategy.
 
 ## Files
 
