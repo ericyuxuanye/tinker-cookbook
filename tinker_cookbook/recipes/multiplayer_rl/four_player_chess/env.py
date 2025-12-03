@@ -212,23 +212,60 @@ def get_random_legal_move(
     return None
 
 
-def board_to_text(state: fpc.EnvState, player_id: int) -> str:
+def board_to_text(state: fpc.EnvState, player_id: int, coordinator: FourPlayerCoordinator | None = None) -> str:
     """Convert JAX board state to text description for the LLM."""
     lines = []
 
     # Header with current player info
     player_names = ["Red", "Blue", "Yellow", "Green"]
     player_colors = ["🔴", "🔵", "🟡", "🟢"]
-    player_positions = [
-        "BOTTOM (rows 12-13)",
-        "RIGHT (columns 12-13)",
-        "TOP (rows 0-1)",
-        "LEFT (columns 0-1)"
-    ]
     player_piece_prefixes = ["r", "b", "y", "g"]
 
-    lines.append(f"You are {player_colors[player_id]} {player_names[player_id]}.")
-    lines.append(f"YOUR PIECES: Look for pieces starting with '{player_piece_prefixes[player_id]}' in {player_positions[player_id]}")
+    # Detailed position and movement info for each player
+    player_info = [
+        # Red (player 0)
+        {
+            "location": "BOTTOM of board",
+            "pawn_row": 12,
+            "pawn_cols": "3-10",
+            "piece_row": 13,
+            "direction": "UPWARD (decreasing row numbers)",
+            "example_move": "Pawn at (12, 6) moves UP to (11, 6) or (10, 6)"
+        },
+        # Blue (player 1)
+        {
+            "location": "RIGHT side of board",
+            "pawn_row": "3-10",
+            "pawn_cols": 12,
+            "piece_row": 13,
+            "direction": "LEFTWARD (decreasing column numbers)",
+            "example_move": "Pawn at (6, 12) moves LEFT to (6, 11) or (6, 10)"
+        },
+        # Yellow (player 2)
+        {
+            "location": "TOP of board",
+            "pawn_row": 1,
+            "pawn_cols": "3-10",
+            "piece_row": 0,
+            "direction": "DOWNWARD (increasing row numbers)",
+            "example_move": "Pawn at (1, 6) moves DOWN to (2, 6) or (3, 6)"
+        },
+        # Green (player 3)
+        {
+            "location": "LEFT side of board",
+            "pawn_row": "3-10",
+            "pawn_cols": 1,
+            "piece_row": 0,
+            "direction": "RIGHTWARD (increasing column numbers)",
+            "example_move": "Pawn at (6, 1) moves RIGHT to (6, 2) or (6, 3)"
+        }
+    ]
+
+    info = player_info[player_id]
+    lines.append(f"You are {player_colors[player_id]} {player_names[player_id]} - {info['location']}")
+    lines.append(f"YOUR PIECES START WITH: '{player_piece_prefixes[player_id]}'")
+    lines.append(f"YOU MOVE: {info['direction']}")
+    lines.append(f"EXAMPLE: {info['example_move']}")
     lines.append(f"Move {int(state.move_count)}")
     lines.append("")
 
@@ -239,6 +276,16 @@ def board_to_text(state: fpc.EnvState, player_id: int) -> str:
         score = int(state.player_scores[i])
         lines.append(f"  {player_colors[i]} {player_names[i]}: {score} points ({status})")
     lines.append("")
+
+    # Show recent move history (last 5 moves) if coordinator available
+    if coordinator is not None and len(coordinator.move_history) > 0:
+        lines.append("RECENT MOVES:")
+        recent_moves = coordinator.move_history[-5:]
+        for move_info in recent_moves:
+            player_name = player_names[move_info['player_id']]
+            player_color = player_colors[move_info['player_id']]
+            lines.append(f"  {player_color} {player_name}: {move_info['move_text']}")
+        lines.append("")
 
     # Render the board
     board = state.board
@@ -272,19 +319,23 @@ def board_to_text(state: fpc.EnvState, player_id: int) -> str:
 
     # List current player's pieces for clarity
     if int(state.move_count) == 0:  # Only show starting pieces at game start
-        lines.append("YOUR STARTING PIECES:")
-        if player_id == 0:  # Red
-            lines.append("  Row 12: rP at columns 3,4,5,6,7,8,9,10 (8 pawns)")
-            lines.append("  Row 13: rR(3), rN(4), rB(5), rQ(6), rK(7), rB(8), rN(9), rR(10)")
-        elif player_id == 1:  # Blue
-            lines.append("  Col 12: bP at rows 3,4,5,6,7,8,9,10 (8 pawns)")
-            lines.append("  Col 13: bR(3), bN(4), bB(5), bQ(6), bK(7), bB(8), bN(9), bR(10)")
-        elif player_id == 2:  # Yellow
-            lines.append("  Row 1: yP at columns 3,4,5,6,7,8,9,10 (8 pawns)")
-            lines.append("  Row 0: yR(3), yN(4), yB(5), yK(6), yQ(7), yB(8), yN(9), yR(10)")
-        elif player_id == 3:  # Green
-            lines.append("  Col 1: gP at rows 3,4,5,6,7,8,9,10 (8 pawns)")
-            lines.append("  Col 0: gR(3), gN(4), gB(5), gK(6), gQ(7), gB(8), gN(9), gR(10)")
+        lines.append("YOUR STARTING PIECES (row, col):")
+        if player_id == 0:  # Red - BOTTOM
+            lines.append("  Pawns: (12,3) (12,4) (12,5) (12,6) (12,7) (12,8) (12,9) (12,10)")
+            lines.append("  Back row 13: Rook(13,3) Knight(13,4) Bishop(13,5) Queen(13,6)")
+            lines.append("               King(13,7) Bishop(13,8) Knight(13,9) Rook(13,10)")
+        elif player_id == 1:  # Blue - RIGHT
+            lines.append("  Pawns: (3,12) (4,12) (5,12) (6,12) (7,12) (8,12) (9,12) (10,12)")
+            lines.append("  Back col 13: Rook(3,13) Knight(4,13) Bishop(5,13) Queen(6,13)")
+            lines.append("               King(7,13) Bishop(8,13) Knight(9,13) Rook(10,13)")
+        elif player_id == 2:  # Yellow - TOP
+            lines.append("  Pawns: (1,3) (1,4) (1,5) (1,6) (1,7) (1,8) (1,9) (1,10)")
+            lines.append("  Back row 0: Rook(0,3) Knight(0,4) Bishop(0,5) King(0,6)")
+            lines.append("              Queen(0,7) Bishop(0,8) Knight(0,9) Rook(0,10)")
+        elif player_id == 3:  # Green - LEFT
+            lines.append("  Pawns: (3,1) (4,1) (5,1) (6,1) (7,1) (8,1) (9,1) (10,1)")
+            lines.append("  Back col 0: Rook(3,0) Knight(4,0) Bishop(5,0) King(6,0)")
+            lines.append("              Queen(7,0) Bishop(8,0) Knight(9,0) Rook(10,0)")
         lines.append("")
 
     lines.append("MOVEMENT RULES:")
@@ -296,16 +347,47 @@ def board_to_text(state: fpc.EnvState, player_id: int) -> str:
     lines.append("  King (K): Moves 1 square in any direction")
     lines.append("")
     lines.append("OUTPUT FORMAT:")
-    lines.append("First analyze the position, then output your move.")
+    lines.append("Output ONLY in this EXACT format: [(row, col) -> (row, col)]")
+    lines.append("DO NOT use LaTeX (\\[, \\], \\rightarrow) or markdown formatting.")
+    lines.append("Use plain text with simple ASCII characters: [ ] ( ) , ->")
     lines.append("")
-    lines.append("EXAMPLES:")
-    lines.append("Analysis: I'll advance my center pawn for better control.")
-    lines.append("Move: [(12, 6) -> (11, 6)]")
+
+    # Player-specific examples
+    if player_id == 0:  # Red - moves UP (decreasing rows)
+        lines.append("CORRECT EXAMPLES FOR RED:")
+        lines.append("  [(12, 6) -> (11, 6)]")
+        lines.append("  [(13, 4) -> (11, 5)]")
+        lines.append("")
+        lines.append("WRONG (DO NOT USE):")
+        lines.append("  \\[(12, 6) \\rightarrow (11, 6)\\]  ❌ No LaTeX!")
+        lines.append("  (12, 6) to (11, 6)  ❌ Must use -> and [ ]")
+    elif player_id == 1:  # Blue - moves LEFT (decreasing columns)
+        lines.append("CORRECT EXAMPLES FOR BLUE:")
+        lines.append("  [(6, 12) -> (6, 11)]")
+        lines.append("  [(4, 13) -> (5, 11)]")
+        lines.append("")
+        lines.append("WRONG (DO NOT USE):")
+        lines.append("  \\[(6, 12) \\rightarrow (6, 11)\\]  ❌ No LaTeX!")
+        lines.append("  (6, 12) to (6, 11)  ❌ Must use -> and [ ]")
+    elif player_id == 2:  # Yellow - moves DOWN (increasing rows)
+        lines.append("CORRECT EXAMPLES FOR YELLOW:")
+        lines.append("  [(1, 6) -> (2, 6)]")
+        lines.append("  [(0, 4) -> (2, 5)]")
+        lines.append("")
+        lines.append("WRONG (DO NOT USE):")
+        lines.append("  \\[(1, 6) \\rightarrow (2, 6)\\]  ❌ No LaTeX!")
+        lines.append("  (1, 6) to (2, 6)  ❌ Must use -> and [ ]")
+    elif player_id == 3:  # Green - moves RIGHT (increasing columns)
+        lines.append("CORRECT EXAMPLES FOR GREEN:")
+        lines.append("  [(6, 1) -> (6, 2)]")
+        lines.append("  [(4, 0) -> (5, 2)]")
+        lines.append("")
+        lines.append("WRONG (DO NOT USE):")
+        lines.append("  \\[(6, 1) \\rightarrow (6, 2)\\]  ❌ No LaTeX!")
+        lines.append("  (6, 1) to (6, 2)  ❌ Must use -> and [ ]")
+
     lines.append("")
-    lines.append("Analysis: Knight development to control key squares.")
-    lines.append("Move: [(13, 4) -> (11, 5)]")
-    lines.append("")
-    lines.append("Now analyze and output your move in format [(row, col) -> (row, col)]:")
+    lines.append("Your turn - output your move in the EXACT format shown above:")
 
     return "\n".join(lines)
 
@@ -317,6 +399,7 @@ def parse_move_action(action_text: str) -> tuple[int, int, int, int, int]:
 
     Extracts the LAST valid move pattern found in the text.
     For GPT-OSS, extracts from the final channel if present.
+    Handles multiple formats: plain, LaTeX, escaped brackets, etc.
     """
     # For GPT-OSS format, try to extract from final channel first
     final_channel_match = re.search(r'<\|channel\|>final<\|message\|>(.+?)(?:<\|end\|>|$)', action_text, re.DOTALL)
@@ -324,29 +407,46 @@ def parse_move_action(action_text: str) -> tuple[int, int, int, int, int]:
         # Use only the final channel content
         action_text = final_channel_match.group(1)
 
-    # Try to match pattern like [(12, 6) -> (10, 6)] or [(7, 3) -> (3, 3)=Q]
-    pattern = r"\[\((\d+),\s*(\d+)\)\s*->\s*\((\d+),\s*(\d+)\)\]\s*(?:=([QRBN]))?"
+    # Clean up common formatting issues
+    # Remove LaTeX \[ \] wrappers
+    action_text = re.sub(r'\\?\\\[', '', action_text)
+    action_text = re.sub(r'\\?\\\]', '', action_text)
+    # Replace LaTeX \rightarrow with ->
+    action_text = action_text.replace('\\rightarrow', '->')
+    action_text = action_text.replace('→', '->')  # Unicode arrow
+    # Remove escaped backslashes
+    action_text = action_text.replace('\\(', '(').replace('\\)', ')')
 
-    # Find ALL matches and use the last one (most likely to be the actual move)
-    matches = list(re.finditer(pattern, action_text))
+    # Try multiple patterns, from most specific to most general
+    patterns = [
+        # Standard format: [(12, 6) -> (10, 6)]
+        r"\[\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*->\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*\]\s*(?:=([QRBN]))?",
+        # Without outer brackets: (12, 6) -> (10, 6)
+        r"(?<!\[)\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*->\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)(?!\])\s*(?:=([QRBN]))?",
+        # Minimal: 12,6 -> 10,6
+        r"(\d+)\s*,\s*(\d+)\s*->\s*(\d+)\s*,\s*(\d+)\s*(?:=([QRBN]))?",
+    ]
 
-    if not matches:
-        return -1, -1, -1, -1, 0
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, action_text))
+        if matches:
+            # Use the last match found (most likely to be the actual move)
+            match = matches[-1]
 
-    # Use the last match found
-    match = matches[-1]
+            source_row = int(match.group(1))
+            source_col = int(match.group(2))
+            dest_row = int(match.group(3))
+            dest_col = int(match.group(4))
 
-    source_row = int(match.group(1))
-    source_col = int(match.group(2))
-    dest_row = int(match.group(3))
-    dest_col = int(match.group(4))
+            # Parse promotion type
+            promotion_map = {"Q": 0, "R": 1, "B": 2, "N": 3}
+            promotion = match.group(5) if match.lastindex >= 5 else None
+            promotion_type = promotion_map.get(promotion, 0) if promotion else 0
 
-    # Parse promotion type
-    promotion_map = {"Q": 0, "R": 1, "B": 2, "N": 3}
-    promotion = match.group(5)
-    promotion_type = promotion_map.get(promotion, 0) if promotion else 0
+            return source_row, source_col, dest_row, dest_col, promotion_type
 
-    return source_row, source_col, dest_row, dest_col, promotion_type
+    # No valid move found
+    return -1, -1, -1, -1, 0
 
 
 def encode_action(source_row: int, source_col: int, dest_row: int, dest_col: int,
@@ -565,7 +665,7 @@ class FourPlayerChessEnv(Env):
 
     def get_done_step(self) -> StepResult:
         # Even when done, provide a valid observation showing final state
-        observation_text = board_to_text(self.coordinator.state, self.player_id)
+        observation_text = board_to_text(self.coordinator.state, self.player_id, self.coordinator)
         return StepResult(
             reward=0.0,
             episode_done=True,
@@ -576,7 +676,7 @@ class FourPlayerChessEnv(Env):
 
     def get_observation(self) -> types.ModelInput:
         """Get text observation for current player. Always returns a valid observation."""
-        observation_text = board_to_text(self.coordinator.state, self.player_id)
+        observation_text = board_to_text(self.coordinator.state, self.player_id, self.coordinator)
         return self.renderer.build_generation_prompt([{"role": "user", "content": observation_text}])
 
 
