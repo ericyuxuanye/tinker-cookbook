@@ -9,13 +9,13 @@ from tinker_cookbook.rl import train
 
 @chz.chz
 class CLIConfig:
-    model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
+    model_name: str = "openai/gpt-oss-20b"
     renderer_name: str | None = None
     batch_size: int = 512
     num_train_datapoints: int = 131072
     num_test_datapoints: int = 128
     learning_rate: float = 3e-5
-    max_tokens: int = 128
+    max_tokens: int = 512  # Enough for reasoning + move output
     eval_every: int = 5
     save_every: int = 20
     wandb_project: str | None = None

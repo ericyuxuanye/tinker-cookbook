@@ -295,11 +295,17 @@ def board_to_text(state: fpc.EnvState, player_id: int) -> str:
     lines.append("  Queen (Q): Moves in any direction any number of squares")
     lines.append("  King (K): Moves 1 square in any direction")
     lines.append("")
-    lines.append("Your turn! Output ONLY your move in this exact format:")
-    lines.append("[(source_row, source_col) -> (dest_row, dest_col)]")
+    lines.append("OUTPUT FORMAT:")
+    lines.append("First analyze the position, then output your move.")
     lines.append("")
-    
-    lines.append("IMPORTANT: Output ONLY the move in the format [(row, col) -> (row, col)]. No explanation.")
+    lines.append("EXAMPLES:")
+    lines.append("Analysis: I'll advance my center pawn for better control.")
+    lines.append("Move: [(12, 6) -> (11, 6)]")
+    lines.append("")
+    lines.append("Analysis: Knight development to control key squares.")
+    lines.append("Move: [(13, 4) -> (11, 5)]")
+    lines.append("")
+    lines.append("Now analyze and output your move in format [(row, col) -> (row, col)]:")
 
     return "\n".join(lines)
 
@@ -310,9 +316,16 @@ def parse_move_action(action_text: str) -> tuple[int, int, int, int, int]:
     Returns: (source_row, source_col, dest_row, dest_col, promotion_type)
 
     Extracts the LAST valid move pattern found in the text.
+    For GPT-OSS, extracts from the final channel if present.
     """
+    # For GPT-OSS format, try to extract from final channel first
+    final_channel_match = re.search(r'<\|channel\|>final<\|message\|>(.+?)(?:<\|end\|>|$)', action_text, re.DOTALL)
+    if final_channel_match:
+        # Use only the final channel content
+        action_text = final_channel_match.group(1)
+
     # Try to match pattern like [(12, 6) -> (10, 6)] or [(7, 3) -> (3, 3)=Q]
-    pattern = r"\\[\\((\\d+),\\s*(\\d+)\\]\\s*->\\s*\\[\\((\\d+),\\s*(\\d+)\\]\\s*(?:=([QRBN]))?]?"
+    pattern = r"\[\((\d+),\s*(\d+)\)\s*->\s*\((\d+),\s*(\d+)\)\]\s*(?:=([QRBN]))?"
 
     # Find ALL matches and use the last one (most likely to be the actual move)
     matches = list(re.finditer(pattern, action_text))
@@ -456,12 +469,20 @@ class FourPlayerChessEnv(Env):
         try:
             action_message: Message = self.renderer.parse_response(action)[0]
             action_text = action_message["content"]
-            print(f"[DEBUG] Player {self.player_id} raw action text: {repr(action_text[:100])}", flush=True)
+            print(f"[DEBUG] Player {self.player_id} raw action text (first 200 chars): {repr(action_text[:200])}", flush=True)
+
+            # Check if final channel exists
+            if "<|channel|>final<|message|>" in action_text:
+                print(f"[DEBUG] Player {self.player_id} found final channel in output", flush=True)
+            else:
+                print(f"[DEBUG] Player {self.player_id} WARNING: No final channel found!", flush=True)
+
         except Exception as e:
              print(f"[DEBUG] Player {self.player_id} error parsing response: {e}", flush=True)
              action_text = ""
 
         source_row, source_col, dest_row, dest_col, promotion = parse_move_action(action_text)
+        print(f"[DEBUG] Player {self.player_id} parsed move: ({source_row}, {source_col}) -> ({dest_row}, {dest_col})", flush=True)
         action_idx = encode_action(source_row, source_col, dest_row, dest_col,
                                    promotion, self.valid_mask)
         
