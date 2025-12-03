@@ -101,14 +101,19 @@ The wrapper parses these and converts them to action indices for the JAX environ
 The `FourPlayerCoordinator` ensures proper turn-taking:
 - Players wait asynchronously for their turn using `asyncio.Condition`
 - In self-play mode, all 4 players share the same coordinator
-- Invalid moves immediately end the game with a penalty
+- Invalid moves trigger retry logic:
+  - Players get up to 3 retries to make a valid move
+  - After each invalid move, the LLM receives feedback and the current board state
+  - Exceeding the retry limit ends the game with a -5 penalty
 
 ## Reward Structure
 
 Players receive rewards for:
 - **Captures**: Points based on piece value (Pawn=1, Knight/Bishop=3, Rook=5, Queen=9)
 - **Eliminations**: 20 points for checkmating/stalemating an opponent
-- **Illegal moves**: -5 penalty and immediate game end
+- **Invalid moves**:
+  - First 3 invalid moves: 0 reward, but player can retry
+  - Exceeding retry limit: -5 penalty and game ends
 
 The total reward is the sum of per-timestep rewards from the JAX environment.
 

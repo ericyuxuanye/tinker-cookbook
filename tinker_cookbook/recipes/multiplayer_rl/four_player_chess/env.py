@@ -26,6 +26,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 STOP_CONDITION = ["]\n"]
 ILLEGAL_MOVE_REWARD = -5.0
+MAX_INVALID_RETRIES = 3  # Allow 3 retries before penalizing
 
 
 class FourPlayerCoordinator:
@@ -35,8 +36,8 @@ class FourPlayerCoordinator:
         self.jax_env = jax_env
         self.state = initial_state  # Current JAX state
         self.condition = asyncio.Condition()
-        self.illegal_player_id: int | None = None
         self.game_done = False
+        self.last_move_valid = True  # Track if the last attempted move was valid
 
     @property
     def current_player_id(self) -> int:
@@ -69,18 +70,35 @@ class FourPlayerCoordinator:
 
             # Check if move was valid
             move_valid = info.get("move_valid", False)
-            if not move_valid:
-                # Mark this player as having made an illegal move
-                self.illegal_player_id = player_id
-                self.game_done = True
-            else:
+            self.last_move_valid = move_valid
+
+            if move_valid:
+                # Update state only if move was valid
                 self.state = next_state
                 self.game_done = bool(done)
-
-            # Notify all waiting players about the state change
-            self.condition.notify_all()
+                # Notify all waiting players about the state change
+                self.condition.notify_all()
+            # If move was invalid, don't update state - let the player retry
 
             return float(reward), dict(info)
+
+
+def invalid_move_feedback(state: fpc.EnvState, player_id: int, retry_count: int) -> str:
+    """Generate feedback for an invalid move."""
+    lines = []
+    player_names = ["Red", "Blue", "Yellow", "Green"]
+    player_colors = ["🔴", "🔵", "🟡", "🟢"]
+
+    lines.append(f"❌ INVALID MOVE! That move is not legal.")
+    lines.append(f"You have {MAX_INVALID_RETRIES - retry_count} retries remaining.")
+    lines.append("")
+    lines.append("Please try again with a valid move.")
+    lines.append("")
+
+    # Show current board state
+    lines.append(board_to_text(state, player_id))
+
+    return "\n".join(lines)
 
 
 def board_to_text(state: fpc.EnvState, player_id: int) -> str:
@@ -206,6 +224,7 @@ class FourPlayerChessEnv(Env):
     renderer: Renderer
     opponent_policies: list[TinkerMessageCompleter | None]  # 3 opponents (or None for self-play)
     valid_mask: jnp.ndarray
+    retry_count: int = 0  # Track number of invalid move retries
 
     def __post_init__(self):
         if self.self_play:
@@ -281,11 +300,38 @@ class FourPlayerChessEnv(Env):
         # Execute move
         reward, info = await self.coordinator.make_move(self.player_id, action_idx)
 
+        # Check if move was valid
+        if not self.coordinator.last_move_valid:
+            # Invalid move - check retry count
+            self.retry_count += 1
+
+            if self.retry_count > MAX_INVALID_RETRIES:
+                # Exceeded retry limit - end the episode with penalty
+                return StepResult(
+                    reward=ILLEGAL_MOVE_REWARD,
+                    episode_done=True,
+                    next_observation=self.get_observation(),
+                    next_stop_condition=self.stop_condition,
+                    metrics={"invalid_move_exceeded_retries": 1},
+                )
+            else:
+                # Allow retry - provide feedback
+                return StepResult(
+                    reward=0.0,  # No reward for invalid move, but no penalty yet
+                    episode_done=False,
+                    next_observation=self.get_observation_with_retry_feedback(),
+                    next_stop_condition=self.stop_condition,
+                    metrics={"invalid_move_retry": 1},
+                )
+
+        # Valid move - reset retry counter
+        self.retry_count = 0
+
         # Wait for next turn
         await self.wait_for_turn()
 
         return StepResult(
-            reward=self.compute_reward(reward, info),
+            reward=reward,
             episode_done=self.coordinator.game_done,
             next_observation=self.get_observation(),
             next_stop_condition=self.stop_condition,
@@ -293,33 +339,24 @@ class FourPlayerChessEnv(Env):
         )
 
     def get_done_step(self) -> StepResult:
+        # Even when done, provide a valid observation showing final state
+        observation_text = board_to_text(self.coordinator.state, self.player_id)
         return StepResult(
             reward=0.0,
             episode_done=True,
-            next_observation=types.ModelInput.empty(),
+            next_observation=self.renderer.build_generation_prompt([{"role": "user", "content": observation_text}]),
             next_stop_condition=STOP_CONDITION,
             metrics={},
         )
 
-    def compute_reward(self, base_reward: float, info: dict) -> float:
-        """Compute reward for this player."""
-        # Check if this player made an illegal move
-        if self.coordinator.illegal_player_id == self.player_id:
-            return ILLEGAL_MOVE_REWARD
-
-        # Use the reward from the JAX environment (capture points, etc.)
-        return base_reward
-
     def get_observation(self) -> types.ModelInput:
-        """Get text observation for current player."""
-        if self.coordinator.game_done:
-            return types.ModelInput.empty()
-
-        # Only provide observation if it's this player's turn
-        if self.coordinator.current_player_id != self.player_id:
-            return types.ModelInput.empty()
-
+        """Get text observation for current player. Always returns a valid observation."""
         observation_text = board_to_text(self.coordinator.state, self.player_id)
+        return self.renderer.build_generation_prompt([{"role": "user", "content": observation_text}])
+
+    def get_observation_with_retry_feedback(self) -> types.ModelInput:
+        """Get observation with feedback about the invalid move."""
+        observation_text = invalid_move_feedback(self.coordinator.state, self.player_id, self.retry_count)
         return self.renderer.build_generation_prompt([{"role": "user", "content": observation_text}])
 
 
