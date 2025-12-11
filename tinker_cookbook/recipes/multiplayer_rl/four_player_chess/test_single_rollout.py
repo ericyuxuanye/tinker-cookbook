@@ -24,6 +24,12 @@ class Config:
     temperature: float = 1.0
     output_file: str = "/tmp/chess_rollout.json"  # Where to save structured log
 
+    # LoRA configuration for players
+    # Format: "player_id:lora_path,player_id:lora_path,..."
+    # Example: "0:tinker://my-lora-run,2:tinker://another-lora"
+    # Players without LoRA specified will use the base model
+    player_loras: str = ""  # Comma-separated list of player_id:lora_path pairs
+
 
 async def run_single_player_with_logging(
     player_id: int,
@@ -108,9 +114,37 @@ async def main():
     print("=" * 80)
     print()
 
-    # Create service client and sampling client
+    # Parse player LoRA configuration
+    player_lora_map: dict[int, str] = {}
+    if cli_config.player_loras:
+        print("\nPlayer LoRA Configuration:")
+        print("-" * 80)
+        for pair in cli_config.player_loras.split(","):
+            pair = pair.strip()
+            if not pair:
+                continue
+            try:
+                player_id_str, lora_path = pair.split(":", 1)
+                player_id = int(player_id_str.strip())
+                lora_path = lora_path.strip()
+                player_lora_map[player_id] = lora_path
+                player_names = ["Red", "Blue", "Yellow", "Green"]
+                player_colors = ["🔴", "🔵", "🟡", "🟢"]
+                print(f"{player_colors[player_id]} Player {player_id} ({player_names[player_id]}): {lora_path}")
+            except ValueError as e:
+                raise ValueError(f"Invalid player_loras format: {pair}. Expected 'player_id:lora_path'") from e
+
+        # Show which players use base model
+        for player_id in range(4):
+            if player_id not in player_lora_map:
+                player_names = ["Red", "Blue", "Yellow", "Green"]
+                player_colors = ["🔴", "🔵", "🟡", "🟢"]
+                print(f"{player_colors[player_id]} Player {player_id} ({player_names[player_id]}): Base Model ({cli_config.model_name})")
+        print("-" * 80)
+        print()
+
+    # Create service client
     service_client = tinker.ServiceClient()
-    sampling_client = service_client.create_sampling_client(base_model=cli_config.model_name)
 
     # Get renderer
     renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(
@@ -136,12 +170,30 @@ async def main():
     # Create envs
     envs_G = await env_group_builder.make_envs()
 
-    # Create policy
-    policy = TinkerTokenCompleter(
-        sampling_client=sampling_client,
-        max_tokens=cli_config.max_tokens,
-        temperature=cli_config.temperature,
-    )
+    # Create sampling clients and policies for each player
+    policies = []
+    for player_id in range(4):
+        if player_id in player_lora_map:
+            # Create sampling client with LoRA checkpoint
+            model_path = player_lora_map[player_id]
+            print(f"Creating LoRA sampling client for player {player_id}: {model_path}")
+            sampling_client = service_client.create_sampling_client(
+                model_path=model_path,
+            )
+        else:
+            # Create base model sampling client
+            print(f"Creating base model sampling client for player {player_id}")
+            sampling_client = service_client.create_sampling_client(
+                base_model=cli_config.model_name
+            )
+
+        # Create policy for this player
+        policy = TinkerTokenCompleter(
+            sampling_client=sampling_client,
+            max_tokens=cli_config.max_tokens,
+            temperature=cli_config.temperature,
+        )
+        policies.append(policy)
 
     # Shared list to collect raw outputs from all players
     raw_outputs = []
@@ -156,8 +208,9 @@ async def main():
 
     try:
         # Create tasks so we can cancel them on interrupt
+        # Each player uses their own policy
         tasks = [
-            asyncio.create_task(run_single_player_with_logging(player_id, env, policy, tokenizer, raw_outputs))
+            asyncio.create_task(run_single_player_with_logging(player_id, env, policies[player_id], tokenizer, raw_outputs))
             for player_id, env in enumerate(envs_G)
         ]
 
@@ -224,6 +277,7 @@ async def main():
             "max_tokens": cli_config.max_tokens,
             "temperature": cli_config.temperature,
             "timestamp": datetime.now().isoformat(),
+            "player_loras": player_lora_map,
         },
         "interrupted": interrupted,
         "total_moves": len(raw_outputs),
@@ -237,6 +291,7 @@ async def main():
         structured_output["players"].append({
             "player_id": player_id,
             "player_name": player_names[player_id],
+            "lora_path": player_lora_map.get(player_id, None),
             "num_moves": len(pd["moves"]),
             "final_reward": pd["final_reward"],
             "metadata": pd["metadata"],
@@ -267,7 +322,13 @@ async def main():
 
     for pd in player_data_list:
         player_id = pd["player_id"]
-        print(f"\n{player_colors[player_id]} {player_names[player_id]}:")
+        player_header = f"{player_colors[player_id]} {player_names[player_id]}"
+        if player_id in player_lora_map:
+            player_header += f" (LoRA: {player_lora_map[player_id]})"
+        else:
+            player_header += " (Base Model)"
+
+        print(f"\n{player_header}:")
         print(f"  Moves: {len(pd['moves'])}")
 
         if pd['final_reward'] is not None:
@@ -369,11 +430,18 @@ async def main():
         rewards = [pd["final_reward"] for pd in player_data_list]
         winner_idx = rewards.index(max(rewards))
 
-        print(f"\n🏆 Winner: {player_colors[winner_idx]} {player_names[winner_idx]}")
+        winner_header = f"{player_colors[winner_idx]} {player_names[winner_idx]}"
+        if winner_idx in player_lora_map:
+            winner_header += f" (LoRA: {player_lora_map[winner_idx]})"
+        else:
+            winner_header += " (Base Model)"
+
+        print(f"\n🏆 Winner: {winner_header}")
         print("\nFinal rewards (centered):")
         for i, reward in enumerate(rewards):
             indicator = " 👑" if i == winner_idx else ""
-            print(f"  {player_colors[i]} {player_names[i]:10s}: {reward:+.2f}{indicator}")
+            model_type = f" [LoRA]" if i in player_lora_map else " [Base]"
+            print(f"  {player_colors[i]} {player_names[i]:10s}: {reward:+.2f}{model_type}{indicator}")
 
     print("\n" + "=" * 80)
     print("TEST COMPLETE")
