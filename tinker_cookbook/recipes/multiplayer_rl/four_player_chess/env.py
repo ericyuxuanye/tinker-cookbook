@@ -329,7 +329,24 @@ def board_to_text(state: fpc.EnvState, player_id: int, coordinator: FourPlayerCo
         for move_info in recent_moves:
             player_name = player_names[move_info['player_id']]
             player_color = player_colors[move_info['player_id']]
-            lines.append(f"  {player_color} {player_name}: {move_info['move_text']}")
+            move_text = move_info['move_text']
+
+            # Strip reasoning to save tokens - only show the actual move
+            # Format: <think>...</think> or <|channel|>analysis<|message|>...<|end|>
+            if '<|channel|>final<|message|>' in move_text:
+                # GPT-OSS format: extract just the final channel content
+                final_start = move_text.find('<|channel|>final<|message|>') + len('<|channel|>final<|message|>')
+                final_end = move_text.find('<|end|>', final_start)
+                if final_end == -1:
+                    final_end = move_text.find('<|return|>', final_start)
+                if final_end > final_start:
+                    move_text = move_text[final_start:final_end].strip()
+            elif '</think>' in move_text:
+                # Simple think tags: extract content after </think>
+                think_end = move_text.rfind('</think>') + len('</think>')
+                move_text = move_text[think_end:].strip()
+
+            lines.append(f"  {player_color} {player_name}: {move_text}")
         lines.append("")
 
     # Render the board
@@ -680,12 +697,11 @@ class FourPlayerChessEnv(Env):
                 
                 # Apply penalty for invalid attempt
                 reward = ILLEGAL_MOVE_REWARD
-                
+
                 metrics = {
                     "invalid_move_fallback": 1,
-                    "move": rand_move_text,
-                    "original_move": action_text,
-                    "reward": float(reward),
+                    # Note: don't include string values like "move" or "original_move"
+                    # because training code computes np.mean() which fails on strings
                 }
             else:
                 # No legal moves available (stalemate/checkmate but game not detected yet?)
@@ -701,8 +717,8 @@ class FourPlayerChessEnv(Env):
         else:
             # Valid move
             metrics = {
-                "move": action_text,
-                "reward": float(reward),
+                # Note: don't include string values like "move"
+                # because training code computes np.mean() which fails on strings
             }
 
         # Wait for next turn
@@ -793,7 +809,7 @@ class FourPlayerChessEnvGroupBuilder(EnvGroupBuilder):
                 "final_score": scores[player_id],
                 "won_game": 1 if player_id == winner_id else 0,
                 "survived": 1 if active_players[player_id] else 0,
-                "winner_player": player_names[winner_id] if winner_id >= 0 else "None",
+                "winner_player_id": winner_id if winner_id >= 0 else -1,  # Numeric ID instead of string
             }
             results.append((0.0, metrics))
 
@@ -806,7 +822,7 @@ class FourPlayerChessEnvGroupBuilder(EnvGroupBuilder):
             raise ValueError("num_envs must be divisible by 4 (one env per player)")
 
         def _construct_coordinator() -> FourPlayerCoordinator:
-            jax_env = fpc.FourPlayerChessEnv()
+            jax_env = fpc.FourPlayerChessEnv(fpc.EnvParams(max_moves=50))
             key = jax.random.PRNGKey(0)
             initial_state, _ = jax_env.reset(key)
             return FourPlayerCoordinator(jax_env=jax_env, initial_state=initial_state)
