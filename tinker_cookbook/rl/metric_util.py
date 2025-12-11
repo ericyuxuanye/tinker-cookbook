@@ -117,20 +117,29 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         self.num_groups_to_log = num_groups_to_log
 
     async def eval_token_completer(self, policy: TokenCompleter) -> dict[str, float]:
+        print(f"[DEBUG] RLTestSetEvaluator: Starting evaluation with {len(self.env_group_builders_P)} groups", flush=True)
         async def run_group_rollout(builder, i):
+            print(f"[DEBUG] RLTestSetEvaluator: Starting rollout for group {i}", flush=True)
             enable_logging = i < self.num_groups_to_log
             with logtree.optional_enable_logging(enable=enable_logging):
-                return await do_group_rollout(builder, policy)
+                result = await do_group_rollout(builder, policy)
+            print(f"[DEBUG] RLTestSetEvaluator: Completed rollout for group {i}", flush=True)
+            return result
 
+        print(f"[DEBUG] RLTestSetEvaluator: Gathering all group rollouts", flush=True)
         trajectory_groups_P = await asyncio.gather(
             *[run_group_rollout(builder, i) for i, builder in enumerate(self.env_group_builders_P)]
         )
+        print(f"[DEBUG] RLTestSetEvaluator: All group rollouts completed, computing metrics", flush=True)
         taglist_P = [builder.logging_tags() for builder in self.env_group_builders_P]
         metrics = compute_trajectory_metrics(trajectory_groups_P, taglist_P)
 
         metrics = {f"{self.name}/{k}": v for k, v in metrics.items()}
+        print(f"[DEBUG] RLTestSetEvaluator: Evaluation complete, returning metrics", flush=True)
         return metrics
 
     async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+        print(f"[DEBUG] RLTestSetEvaluator: __call__ invoked, creating policy", flush=True)
         policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
+        print(f"[DEBUG] RLTestSetEvaluator: Policy created, calling eval_token_completer", flush=True)
         return await self.eval_token_completer(policy)

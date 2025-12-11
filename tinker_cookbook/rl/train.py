@@ -266,13 +266,16 @@ class Config:
 @scope
 async def run_single_evaluation(evaluator, cfg, i_batch, sampling_client):
     ev_name = _get_evaluator_name(evaluator)
+    print(f"[DEBUG] run_single_evaluation: Starting evaluation {ev_name} at batch {i_batch}", flush=True)
     with _get_logtree_scope(
         log_path=cfg.log_path,
         num_groups_to_log=cfg.num_groups_to_log,
         f_name=f"eval_{ev_name}_iteration_{i_batch:06d}",
         scope_name=f"Running evaluation {ev_name} {i_batch}",
     ):
+        print(f"[DEBUG] run_single_evaluation: Calling evaluator {ev_name}", flush=True)
         eval_metrics = await evaluator(sampling_client)
+        print(f"[DEBUG] run_single_evaluation: Evaluator {ev_name} completed", flush=True)
         return eval_metrics
 
 
@@ -284,11 +287,13 @@ async def run_evaluations_parallel(
     i_batch: int,
 ) -> dict[str, Any]:
     """Run all evaluators in parallel and return aggregated metrics."""
+    print(f"[DEBUG] run_evaluations_parallel: Starting with {len(evaluators)} evaluators", flush=True)
 
     # Create tasks for all evaluators with names for better traceability
     tasks = []
     for i, evaluator in enumerate(evaluators):
         ev_name = _get_evaluator_name(evaluator)
+        print(f"[DEBUG] run_evaluations_parallel: Creating task for evaluator {ev_name or i}", flush=True)
         task = asyncio.create_task(
             run_single_evaluation(evaluator, cfg, i_batch, sampling_client),
             name=f"eval_{ev_name or i}_iteration_{i_batch:06d}",
@@ -296,13 +301,16 @@ async def run_evaluations_parallel(
         tasks.append(task)
 
     # Wait for all to complete
+    print(f"[DEBUG] run_evaluations_parallel: Waiting for {len(tasks)} tasks to complete", flush=True)
     results = await asyncio.gather(*tasks)
+    print(f"[DEBUG] run_evaluations_parallel: All tasks completed", flush=True)
 
     # Merge all metrics
     metrics = {}
     for result in results:
         metrics.update(result)
 
+    print(f"[DEBUG] run_evaluations_parallel: Returning metrics", flush=True)
     return metrics
 
 
